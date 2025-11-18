@@ -31,6 +31,8 @@ pub struct MacroCell {
     pub n: usize,
     /// Indices of child cells (each with width 2^(n-1))
     pub children: SubCells,
+    /// Bounding box of all live cells in this macrocell, in local coordinates (min_x, min_y, max_x, max_y)
+    pub bbox: Option<(i64, i64, i64, i64)>,
 }
 
 #[derive(Clone)]
@@ -60,11 +62,13 @@ impl HashLife {
                 MacroCell {
                     n: 0,
                     children: [DEAD; 4],
+                    bbox: None,
                 },
                 // Handle(1) is always a single, live cell.
                 MacroCell {
                     n: 0,
                     children: [INVALID_HANDLE; 4],
+                    bbox: Some((0, 0, 0, 0)), // single live cell at (0,0)
                 },
             ],
             result: Default::default(),
@@ -150,9 +154,35 @@ impl HashLife {
         match self.parent_cell.get(&children) {
             None => {
                 let idx = self.macrocells.len();
+                // Compute bbox from children
+                let mut bbox: Option<(i64, i64, i64, i64)> = None;
+                for (i, &child) in children.iter().enumerate() {
+                    let child_bbox = self.macrocells[child.0].bbox;
+                    if let Some((min_x, min_y, max_x, max_y)) = child_bbox {
+                        // Offset for quadrant
+                        let (dx, dy) = match i {
+                            0 => (0, 0),
+                            1 => (1 << (n-1), 0),
+                            2 => (0, 1 << (n-1)),
+                            3 => (1 << (n-1), 1 << (n-1)),
+                            _ => unreachable!(),
+                        };
+                        let (min_x, min_y, max_x, max_y) = (min_x + dx, min_y + dy, max_x + dx, max_y + dy);
+                        bbox = match bbox {
+                            None => Some((min_x, min_y, max_x, max_y)),
+                            Some((bmin_x, bmin_y, bmax_x, bmax_y)) => Some((
+                                bmin_x.min(min_x),
+                                bmin_y.min(min_y),
+                                bmax_x.max(max_x),
+                                bmax_y.max(max_y),
+                            )),
+                        };
+                    }
+                }
                 self.macrocells.push(MacroCell {
                     n,
                     children,
+                    bbox,
                 });
                 let handle = Handle(idx);
                 self.parent_cell.insert(children, handle);
@@ -382,6 +412,14 @@ impl HashLife {
         children[idx] = self.modify(children[idx], subcoord, value, n - 1);
 
         self.parent(children, n)
+    }
+
+    /// Get the bounding box of all live cells, if any exist
+    pub fn bounding_box(&self) -> Option<((i64, i64), (i64, i64))> {
+        // Use the bbox from the root macrocell (last in the vector)
+        self.macrocells.last().and_then(|mc| mc.bbox).map(|(min_x, min_y, max_x, max_y)| {
+            ((min_x, min_y), (max_x, max_y))
+        })
     }
 
     /// Return the child index and sub-coordinate at the given coordinates
